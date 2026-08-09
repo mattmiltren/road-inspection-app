@@ -3,6 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Road Inspect">
+<meta name="mobile-web-app-capable" content="yes">
 <link rel="apple-touch-icon" href="ROADTRACE.png">
 <title>Road Inspection Logger</title>
 <style>
@@ -72,6 +76,29 @@
   .kmpost .kmlabel{font-size:11px; letter-spacing:2px; font-weight:700; color:#dff5e6;}
   .kmpost .kmvalue{font-family:var(--mono); font-size:34px; font-weight:700; line-height:1.1; margin-top:2px;}
   .kmpost .kmunit{font-size:12px; color:#dff5e6;}
+  .kmpost .segment-tag{
+    margin-top:10px; display:inline-block; background:rgba(0,0,0,0.25);
+    padding:5px 12px; border-radius:20px; font-size:12px; font-weight:700;
+    letter-spacing:0.5px; color:#f4f4f2;
+  }
+  .kmpost .segment-tag.faroff{background:rgba(193,57,43,0.5);}
+
+  /* Bound (direction) toggle */
+  .bound-block{margin-top:12px; background:var(--panel); border:1px solid #3a4046; border-radius:10px; padding:10px 14px;}
+  .bound-label{font-size:11px; color:#9aa0a6; margin-bottom:8px; line-height:1.4;}
+  .bound-toggle{display:flex; gap:8px;}
+  .bound-hint{font-size:12px; color:#565c62; font-style:italic;}
+  button.bound-btn{
+    flex:1; padding:12px 10px; border-radius:8px; border:2px solid #3a4046;
+    background:var(--asphalt-2); color:var(--line-white); font-weight:700; font-size:14px;
+    cursor:pointer; -webkit-tap-highlight-color:transparent;
+  }
+  button.bound-btn.active{background:var(--line-yellow); color:#191c1f; border-color:var(--line-yellow);}
+
+  .lane-input{
+    width:100%; padding:12px; margin-bottom:10px; border-radius:8px; border:1px solid #3a4046;
+    background:var(--panel); color:var(--line-white); font-size:14px;
+  }
 
   section.block{margin-top:22px;}
   h2{font-size:13px; text-transform:uppercase; letter-spacing:1.2px; color:#9aa0a6; margin:0 0 10px;}
@@ -109,13 +136,6 @@
   details.calib{background:var(--panel); border:1px solid #3a4046; border-radius:10px; padding:10px 14px;}
   details.calib summary{cursor:pointer; font-size:13px; font-weight:700; color:var(--line-yellow); list-style:none;}
   details.calib summary::-webkit-details-marker{display:none;}
-  .calib-rows{margin-top:10px; display:flex; flex-direction:column; gap:8px;}
-  .calib-row{display:grid; grid-template-columns:1fr 1.4fr 1.4fr auto; gap:6px; align-items:center;}
-  .calib-row input{
-    width:100%; padding:8px; border-radius:6px; border:1px solid #3a4046;
-    background:var(--asphalt-2); color:var(--line-white); font-family:var(--mono); font-size:12px;
-  }
-  .calib-row button{background:var(--safety-red); border:none; color:white; border-radius:6px; padding:6px 8px; font-weight:700; cursor:pointer;}
   .calib-add{margin-top:8px; background:#3a4046; border:none; color:var(--line-white); padding:8px 12px; border-radius:6px; cursor:pointer; font-size:12px;}
   .calib-hint{font-size:11px; color:#9aa0a6; margin-top:8px; line-height:1.5;}
 
@@ -150,6 +170,7 @@
 <header>
   <h1>Road Inspection Logger</h1>
   <div class="sub" id="clock">-- -- --</div>
+  <div class="sub" id="storage-status">checking on-device storage...</div>
 </header>
 
 <main>
@@ -178,23 +199,27 @@
     <div class="kmlabel">CURRENT KM STATION</div>
     <div class="kmvalue" id="km-value">--.---</div>
     <div class="kmunit">kilometers (interpolated)</div>
+    <div class="segment-tag" id="segment-tag">--</div>
+  </div>
+
+  <div class="bound-block">
+    <div class="bound-label">Direction you're traveling (set manually — can't be auto-detected from this data)</div>
+    <div class="bound-toggle" id="bound-toggle">
+      <span class="bound-hint" id="bound-hint">detecting segment...</span>
+    </div>
   </div>
 
   <section class="block">
     <details class="calib">
-      <summary>▸ Km-station calibration (set this up first)</summary>
-      <div class="calib-hint">
-        Enter at least 2 known km-post locations along your route (their lat/long and the km value
-        painted on the post). The app finds your nearest two calibration points and interpolates
-        your km station between them. Add more points along the way for better accuracy.
-      </div>
-      <div class="calib-rows" id="calib-rows"></div>
-      <button class="calib-add" id="calib-add">+ Add calibration point</button>
+      <summary>▸ Network calibration data</summary>
+      <div class="calib-hint" id="calib-status">Loading NLEX network alignment...</div>
+      <button class="calib-add" id="calib-reload">↻ Reload dataset</button>
     </details>
   </section>
 
   <section class="block">
     <h2>Log a defect</h2>
+    <input type="text" id="lane-input" class="lane-input" placeholder="Lane (e.g. Lane 1, Shoulder, Deceleration Lane)">
     <div class="defect-grid">
       <button class="defect-btn pothole" data-type="Pothole">🕳️ Pothole</button>
       <button class="defect-btn shoving" data-type="Shoving">〰️ Shoving</button>
@@ -225,9 +250,113 @@
 
 <script>
 let currentPos = null; // {lat, lon, acc}
-let calibPoints = [];  // {km, lat, lon}
-let entries = [];      // {type, timestamp, lat, lon, km}
-let calibRowId = 0;
+let calibData = [];    // {e, b, k, lat, lon} — loaded from the NLEX network dataset
+let entries = [];      // {type, timestamp, lat, lon, km, expressway, bound, lane}
+let expresswayBounds = {}; // { "NLEX": ["NB","SB"], "C3-R10 RAMP": ["EB","WB"], ... }
+let userBound = null;      // manually selected direction, e.g. "NB"
+let currentExpressway = null; // last detected corridor, used to know which bound pair to show
+
+// ---------- Persistent storage (survives closing the app) ----------
+const STORAGE_KEY_ENTRIES = 'nlex_inspection_entries_v1';
+const STORAGE_KEY_DATASET = 'nlex_network_dataset_v1';
+const STORAGE_KEY_BOUND = 'nlex_user_bound_v1';
+const STORAGE_KEY_LANE = 'nlex_last_lane_v1';
+let storageAvailable = true;
+
+function testStorageWritable(){
+  try{
+    const testKey = '__nlex_storage_test__';
+    localStorage.setItem(testKey, '1');
+    localStorage.removeItem(testKey);
+    return true;
+  }catch(e){
+    return false;
+  }
+}
+
+function loadFromStorage(){
+  storageAvailable = testStorageWritable();
+  if(!storageAvailable) return;
+  try{
+    const savedEntries = localStorage.getItem(STORAGE_KEY_ENTRIES);
+    if(savedEntries) entries = JSON.parse(savedEntries);
+    const savedBound = localStorage.getItem(STORAGE_KEY_BOUND);
+    if(savedBound) userBound = savedBound;
+  }catch(e){
+    console.error('Could not read saved entries', e);
+  }
+}
+
+function saveEntries(){
+  if(!storageAvailable) return;
+  try{
+    localStorage.setItem(STORAGE_KEY_ENTRIES, JSON.stringify(entries));
+  }catch(e){
+    storageAvailable = false;
+    console.error('Could not save entries', e);
+    const el = document.getElementById('storage-status');
+    if(el) el.textContent = '⚠ Save failed — storage blocked (check you\'re not in Private Browsing). Export now to avoid losing this entry.';
+  }
+}
+
+loadFromStorage();
+window.addEventListener('DOMContentLoaded', () => {
+  const el = document.getElementById('storage-status');
+  if(storageAvailable){
+    el.textContent = entries.length
+      ? `${entries.length} entries saved on this device`
+      : 'on-device storage ready — entries will be saved automatically';
+  } else {
+    el.textContent = '⚠ On-device storage is blocked in this tab (likely Private Browsing) — entries will NOT be saved. Use a normal Safari tab, or export after every session.';
+  }
+  if(storageAvailable){
+    try{
+      const savedLane = localStorage.getItem(STORAGE_KEY_LANE);
+      if(savedLane) document.getElementById('lane-input').value = savedLane;
+    }catch(e){ /* non-critical */ }
+  }
+});
+
+// ---------- Network calibration dataset (NLEX chainage-to-coordinates) ----------
+function buildExpresswayBoundsMap(){
+  expresswayBounds = {};
+  for(const p of calibData){
+    if(!expresswayBounds[p.e]) expresswayBounds[p.e] = new Set();
+    expresswayBounds[p.e].add(p.b);
+  }
+  for(const key in expresswayBounds){
+    expresswayBounds[key] = Array.from(expresswayBounds[key]).sort();
+  }
+}
+
+async function loadCalibrationDataset(forceNetwork){
+  const statusEl = document.getElementById('calib-status');
+  try{
+    if(!forceNetwork){
+      const cached = localStorage.getItem(STORAGE_KEY_DATASET);
+      if(cached){
+        calibData = JSON.parse(cached);
+        buildExpresswayBoundsMap();
+        statusEl.textContent = `Loaded ${calibData.length.toLocaleString()} points from on-device cache (works offline).`;
+        return;
+      }
+    }
+    statusEl.textContent = 'Downloading NLEX network alignment...';
+    const res = await fetch('calibration.json', { cache: 'no-store' });
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    const text = await res.text();
+    calibData = JSON.parse(text);
+    buildExpresswayBoundsMap();
+    try{ localStorage.setItem(STORAGE_KEY_DATASET, text); }catch(e){ /* dataset too big for storage quota; still usable this session */ }
+    statusEl.textContent = `Loaded ${calibData.length.toLocaleString()} points from NLEX network dataset (cached for offline use).`;
+  }catch(err){
+    statusEl.textContent = calibData.length
+      ? `Using ${calibData.length.toLocaleString()} previously cached points — couldn't refresh (${err.message}).`
+      : `Could not load network dataset (${err.message}). Km station will show as unavailable.`;
+  }
+}
+document.getElementById('calib-reload').addEventListener('click', () => loadCalibrationDataset(true));
+loadCalibrationDataset(false);
 
 // ---------- Clock ----------
 function tickClock(){
@@ -251,14 +380,37 @@ function haversineKm(lat1, lon1, lat2, lon2){
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
+// Threshold beyond which we flag the reading as "off the mapped network"
+// (e.g. GPS drift, a service road, or a stretch not covered by the dataset).
+const OFF_NETWORK_KM = 0.15;
+
 function computeKmStation(lat, lon){
-  if(calibPoints.length < 2) return null;
-  const withDist = calibPoints.map(p => ({...p, dist: haversineKm(lat,lon,p.lat,p.lon)}));
-  withDist.sort((a,b)=>a.dist-b.dist);
-  const [p1, p2] = withDist;
-  if(p1.dist + p2.dist === 0) return p1.km;
-  const ratio = p1.dist / (p1.dist + p2.dist);
-  return p1.km + (p2.km - p1.km) * ratio;
+  if(calibData.length < 1) return null;
+
+  // Nearest point overall — this identifies which expressway + direction we're on.
+  let best = null, bestDist = Infinity;
+  for(const p of calibData){
+    const d = haversineKm(lat, lon, p.lat, p.lon);
+    if(d < bestDist){ bestDist = d; best = p; }
+  }
+  if(!best) return null;
+
+  // Nearest point within the SAME expressway+bound, to interpolate km smoothly
+  // rather than snapping to 20m increments.
+  let second = null, secondDist = Infinity;
+  for(const p of calibData){
+    if(p === best || p.e !== best.e || p.b !== best.b) continue;
+    const d = haversineKm(lat, lon, p.lat, p.lon);
+    if(d < secondDist){ secondDist = d; second = p; }
+  }
+
+  let km = best.k;
+  if(second){
+    const total = bestDist + secondDist;
+    km = total === 0 ? best.k : best.k + (second.k - best.k) * (bestDist / total);
+  }
+
+  return { km, expressway: best.e, bound: best.b, distance: bestDist };
 }
 
 function updateReadout(){
@@ -266,8 +418,66 @@ function updateReadout(){
   document.getElementById('lat').textContent = currentPos.lat.toFixed(6);
   document.getElementById('lon').textContent = currentPos.lon.toFixed(6);
   document.getElementById('acc').textContent = currentPos.acc ? `±${currentPos.acc.toFixed(0)} m` : '--';
-  const km = computeKmStation(currentPos.lat, currentPos.lon);
-  document.getElementById('km-value').textContent = km !== null ? km.toFixed(3) : '--.---';
+
+  const result = computeKmStation(currentPos.lat, currentPos.lon);
+  const kmEl = document.getElementById('km-value');
+  const tagEl = document.getElementById('segment-tag');
+
+  if(!result){
+    kmEl.textContent = '--.---';
+    tagEl.textContent = calibData.length ? '--' : 'dataset not loaded';
+    tagEl.classList.remove('faroff');
+    return;
+  }
+
+  kmEl.textContent = result.km.toFixed(3);
+  const displayBound = userBound || '?';
+  if(result.distance > OFF_NETWORK_KM){
+    tagEl.textContent = `⚠ Off mapped network (~${Math.round(result.distance*1000)}m from ${result.expressway})`;
+    tagEl.classList.add('faroff');
+  } else {
+    tagEl.textContent = `${result.expressway} · ${displayBound}`;
+    tagEl.classList.remove('faroff');
+  }
+
+  renderBoundToggle(result.expressway);
+}
+
+// ---------- Direction (bound) toggle — manual, since NB/SB coordinates are identical in this dataset ----------
+function saveBound(){
+  if(!storageAvailable) return;
+  try{ localStorage.setItem(STORAGE_KEY_BOUND, userBound || ''); }catch(e){ /* non-critical */ }
+}
+
+function renderBoundToggle(expressway){
+  const wrap = document.getElementById('bound-toggle');
+  const options = expresswayBounds[expressway];
+  if(!options || options.length === 0){
+    wrap.innerHTML = '<span class="bound-hint">no direction data for this segment</span>';
+    return;
+  }
+  // Only rebuild the buttons if the segment (and thus its option pair) changed
+  if(currentExpressway === expressway && wrap.querySelectorAll('.bound-btn').length === options.length) {
+    // just refresh active state
+    wrap.querySelectorAll('.bound-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.bound === userBound);
+    });
+    return;
+  }
+  currentExpressway = expressway;
+  wrap.innerHTML = '';
+  options.forEach(opt => {
+    const btn = document.createElement('button');
+    btn.className = 'bound-btn' + (opt === userBound ? ' active' : '');
+    btn.textContent = opt;
+    btn.dataset.bound = opt;
+    btn.addEventListener('click', () => {
+      userBound = opt;
+      saveBound();
+      wrap.querySelectorAll('.bound-btn').forEach(b => b.classList.toggle('active', b.dataset.bound === userBound));
+    });
+    wrap.appendChild(btn);
+  });
 }
 
 if(navigator.geolocation){
@@ -289,46 +499,6 @@ if(navigator.geolocation){
   gpsStatus.className = 'status err';
 }
 
-// ---------- Calibration UI ----------
-function renderCalibRows(){
-  const wrap = document.getElementById('calib-rows');
-  wrap.innerHTML = '';
-  calibPoints.forEach((p, idx) => {
-    const row = document.createElement('div');
-    row.className = 'calib-row';
-    row.innerHTML = `
-      <input type="number" step="0.001" placeholder="Km" value="${p.km ?? ''}" data-idx="${idx}" data-field="km">
-      <input type="number" step="0.000001" placeholder="Lat" value="${p.lat ?? ''}" data-idx="${idx}" data-field="lat">
-      <input type="number" step="0.000001" placeholder="Long" value="${p.lon ?? ''}" data-idx="${idx}" data-field="lon">
-      <button data-idx="${idx}" class="calib-del">✕</button>
-    `;
-    wrap.appendChild(row);
-  });
-  wrap.querySelectorAll('input').forEach(inp => {
-    inp.addEventListener('input', (e) => {
-      const idx = +e.target.dataset.idx;
-      const field = e.target.dataset.field;
-      const val = parseFloat(e.target.value);
-      calibPoints[idx][field] = isNaN(val) ? null : val;
-      updateReadout();
-    });
-  });
-  wrap.querySelectorAll('.calib-del').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      const idx = +e.target.dataset.idx;
-      calibPoints.splice(idx, 1);
-      renderCalibRows();
-      updateReadout();
-    });
-  });
-}
-
-document.getElementById('calib-add').addEventListener('click', () => {
-  calibPoints.push({ km: null, lat: null, lon: null });
-  renderCalibRows();
-});
-renderCalibRows();
-
 // ---------- Defect logging ----------
 function pad(n){ return n.toString().padStart(2,'0'); }
 
@@ -342,14 +512,22 @@ function logDefect(type){
     alert('Waiting for GPS fix — please allow location access and wait a moment.');
     return;
   }
-  const km = computeKmStation(currentPos.lat, currentPos.lon);
+  const result = computeKmStation(currentPos.lat, currentPos.lon);
+  const lane = document.getElementById('lane-input').value.trim();
+  if(storageAvailable){
+    try{ localStorage.setItem(STORAGE_KEY_LANE, lane); }catch(e){ /* non-critical */ }
+  }
   entries.push({
     type,
     timestamp: fullTimestamp(),
     lat: currentPos.lat,
     lon: currentPos.lon,
-    km: km
+    km: result ? result.km : null,
+    expressway: result ? result.expressway : '',
+    bound: userBound || '',
+    lane
   });
+  saveEntries();
   renderLog();
 }
 
@@ -397,7 +575,7 @@ function renderLog(){
     div.innerHTML = `
       <div class="info">
         <div class="type">${e.type}</div>
-        <div class="meta">${e.timestamp}<br>${e.lat.toFixed(6)}, ${e.lon.toFixed(6)} · km ${e.km !== null ? e.km.toFixed(3) : 'n/a'}</div>
+        <div class="meta">${e.timestamp}<br>${e.lat.toFixed(6)}, ${e.lon.toFixed(6)} · km ${e.km !== null && e.km !== undefined ? e.km.toFixed(3) : 'n/a'}${e.expressway ? ` · ${e.expressway}${e.bound ? ' '+e.bound : ''}` : ''}${e.lane ? ` · ${e.lane}` : ''}</div>
       </div>
       <button class="del" data-idx="${realIdx}">✕</button>
     `;
@@ -406,6 +584,7 @@ function renderLog(){
   list.querySelectorAll('.del').forEach(btn => {
     btn.addEventListener('click', (e) => {
       entries.splice(+e.target.dataset.idx, 1);
+      saveEntries();
       renderLog();
     });
   });
@@ -416,6 +595,7 @@ document.getElementById('clear-btn').addEventListener('click', () => {
   if(entries.length === 0) return;
   if(confirm(`Delete all ${entries.length} logged entries? This cannot be undone.`)){
     entries = [];
+    saveEntries();
     renderLog();
   }
 });
@@ -423,13 +603,16 @@ document.getElementById('clear-btn').addEventListener('click', () => {
 // ---------- CSV export ----------
 document.getElementById('export-btn').addEventListener('click', () => {
   if(entries.length === 0) return;
-  const header = ['Type of Defect', 'Timestamp', 'Latitude', 'Longitude', 'Km Station'];
+  const header = ['Type of Defect', 'Timestamp', 'Latitude', 'Longitude', 'Expressway', 'Direction', 'Lane', 'Km Station'];
   const rows = entries.map(e => [
     e.type,
     e.timestamp,
     e.lat.toFixed(6),
     e.lon.toFixed(6),
-    e.km !== null ? e.km.toFixed(3) : ''
+    e.expressway || '',
+    e.bound || '',
+    e.lane || '',
+    e.km !== null && e.km !== undefined ? e.km.toFixed(3) : ''
   ]);
   const csv = [header, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
